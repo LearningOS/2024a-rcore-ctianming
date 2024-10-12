@@ -23,8 +23,6 @@ pub struct TaskInfo {
     pub status: TaskStatus,
     /// The numbers of syscall called by task
     pub syscall_times: [u32; MAX_SYSCALL_NUM],
-    /// First running time of task
-    pub start_time: usize,
     /// Total running time of task, that is mean, not the time form task start to now, but the total time of task running
     pub time: usize,
 }
@@ -35,7 +33,6 @@ impl TaskInfo {
         TaskInfo {
             status: TaskStatus::UnInit,
             syscall_times: [0; MAX_SYSCALL_NUM],
-            start_time: 0,
             time: 0,
         }
     }

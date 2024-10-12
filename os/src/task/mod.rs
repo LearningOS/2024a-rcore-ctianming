@@ -57,6 +57,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_info: TaskInfo::new(),
+            start_time: 0,
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -84,7 +85,7 @@ impl TaskManager {
         let task0 = &mut inner.tasks[0];
         task0.task_info.status = TaskStatus::Running;
         // set start time when the task starts
-        task0.task_info.start_time = crate::timer::get_time_ms();
+        task0.start_time = crate::timer::get_time_ms();
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -129,8 +130,8 @@ impl TaskManager {
             // inner.tasks[current].task_info.time +=
             //     crate::timer::get_time_ms() - inner.tasks[current].task_info.start_time;
             inner.tasks[next].task_info.status = TaskStatus::Running;
-            if inner.tasks[next].task_info.start_time == 0 {
-                inner.tasks[next].task_info.start_time = crate::timer::get_time_ms();
+            if inner.tasks[next].start_time == 0 {
+                inner.tasks[next].start_time = crate::timer::get_time_ms();
             }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -152,9 +153,9 @@ impl TaskManager {
         let current = inner.current_task;
         inner.tasks[current].task_info.status = TaskStatus::Running;
         let ex_time = crate::timer::get_time_ms();
-        inner.tasks[current].task_info.time += ex_time - inner.tasks[current].task_info.start_time;
-        inner.tasks[current].task_info.start_time = ex_time;
-        println!("task info: {:?}", inner.tasks[current].task_info);
+        inner.tasks[current].task_info.time += ex_time - inner.tasks[current].start_time;
+        inner.tasks[current].start_time = ex_time;
+        // println!("task info: {:?}", inner.tasks[current].task_info);
         inner.tasks[current].task_info
     }
 
@@ -187,7 +188,7 @@ impl TaskManager {
     /// Get the current task's start time
     fn get_current_start_time(&self) -> usize {
         let inner = self.inner.exclusive_access();
-        inner.tasks[inner.current_task].task_info.start_time
+        inner.tasks[inner.current_task].start_time
     }
 
     /// Get the current task's total time
