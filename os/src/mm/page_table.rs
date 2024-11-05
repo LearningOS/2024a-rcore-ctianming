@@ -4,6 +4,7 @@ use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPag
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use crate::config::MEMORY_END;
 
 bitflags! {
     /// page table entry flags
@@ -108,7 +109,7 @@ impl PageTable {
         result
     }
     /// Find PageTableEntry by VirtPageNum
-    fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
@@ -170,4 +171,35 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Translate a virtual address to a physical address
+pub fn translate_va_to_pa(token: usize, va: usize) -> usize {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(va);
+    let pte = PageTable::translate(&page_table, va.floor());
+    let ppn = pte.unwrap().ppn();
+    let pa = usize::from(ppn) << 12 | va.page_offset();
+    pa.into()
+}
+
+/// Memory map
+pub fn page_table_mmap(token: usize, start: usize, len: usize, port: usize) {
+    let mut page_table = PageTable::from_token(token);
+    (start..start + len).for_each(|index| {
+        let vpn = VirtPageNum::from(index + len * 100000);
+        let ppn =
+            PhysPageNum::from(index - start + MEMORY_END - (token * 1000) % (MEMORY_END / 10));
+        let flags = PTEFlags::from_bits((port & 0x7) as u8).unwrap();
+        page_table.map(vpn, ppn, flags);
+    })
+}
+
+/// Memory unmap
+pub fn page_table_munmap(token: usize, start: usize, len: usize) {
+    let mut page_table = PageTable::from_token(token);
+    (start..start + len).for_each(|index| {
+        let vpn = VirtPageNum::from(index + len * 100000);
+        page_table.unmap(vpn);
+    })
 }

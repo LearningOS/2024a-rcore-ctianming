@@ -14,8 +14,12 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
+use crate::syscall::process::TaskInfo;
+// use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -79,6 +83,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        // set start time when the task starts
+        next_task.start_time = crate::timer::get_time_ms();
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -140,6 +146,9 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].start_time == 0 {
+                inner.tasks[next].start_time = crate::timer::get_time_ms();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -152,6 +161,82 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+    /// Get the current 'Running' task's syscall times.
+    fn get_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task_info = inner.tasks[current].task_info.clone();
+        task_info.syscall_times
+    }
+
+    /// Get the current 'Running' task's total running time.
+    fn get_current_task_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task_info = inner.tasks[current].task_info.clone();
+        task_info.time
+    }
+
+    /// Update the current 'Running' task's total running time.
+    fn update_syscall_times(&self, syscall_times: [u32; MAX_SYSCALL_NUM]) {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let mut task_info = inner.tasks[current].task_info.clone();
+        task_info.syscall_times = syscall_times;
+    }
+
+    fn insert_framed_area(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current]
+            .memory_set
+            .insert_framed_area(start, end, permission);
+    }
+
+    fn drop_frame_area(&self, start: VirtAddr, end: VirtAddr) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_set.drop_frame_area(start, end);
+    }
+
+    /// Trace the syscalls
+    pub fn trace_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.syscall_times[syscall_id % MAX_SYSCALL_NUM] += 1;
+    }
+
+    /// Fetch the task info
+    pub fn fetch_task_info(&self) -> TaskInfo {
+        // let inner = self.inner.exclusive_access();
+        // let current = inner.current_task;
+        // let mut task_info = inner.tasks[current].task_info.clone();
+        // task_info.time = get_time_ms() - task_info.time;
+        // task_info
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.status = TaskStatus::Running;
+        let ex_time = crate::timer::get_time_ms();
+        inner.tasks[current].task_info.time += ex_time - inner.tasks[current].start_time;
+        inner.tasks[current].start_time = ex_time;
+        // println!("task info: {:?}", inner.tasks[current].task_info);
+        inner.tasks[current].task_info.clone()
+    }
+
+    /// get the refrence of current task
+    pub fn current_task(&self) -> &'static TaskControlBlock {
+        let inner = self.inner.exclusive_access();
+        let task = &inner.tasks[inner.current_task] as *const TaskControlBlock;
+        unsafe { &*task }
+    }
+
+    /// get the mutable refrence of current task
+    pub fn current_task_mut(&self) -> &'static mut TaskControlBlock {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        let task = &mut inner.tasks[current_task] as *mut TaskControlBlock;
+        unsafe { &mut *task }
     }
 }
 
@@ -201,4 +286,39 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Get the current 'Running' task's syscall times.
+pub fn get_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_syscall_times()
+}
+
+/// Get the current 'Running' task's total running time.
+pub fn get_current_task_time() -> usize {
+    TASK_MANAGER.get_current_task_time()
+}
+
+/// Update the current 'Running' task's total running time.
+pub fn update_syscall_times(syscall_times: [u32; MAX_SYSCALL_NUM]) {
+    TASK_MANAGER.update_syscall_times(syscall_times);
+}
+
+/// Insert a new framed area to the current 'Running' task's memory set.
+pub fn insert_framed_area(start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.insert_framed_area(start, end, permission);
+}
+
+/// Drop a framed area from the current 'Running' task's memory set.
+pub fn drop_frame_area(start: VirtAddr, end: VirtAddr) {
+    TASK_MANAGER.drop_frame_area(start, end);
+}
+
+/// Fetch the task info
+pub fn fetch_task_info() -> TaskInfo {
+    TASK_MANAGER.fetch_task_info()
+}
+
+/// Trace the syscalls
+pub fn trace_syscall(syscall_id: usize) {
+    TASK_MANAGER.trace_syscall(syscall_id);
 }

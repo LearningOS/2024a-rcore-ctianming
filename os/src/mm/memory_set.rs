@@ -8,6 +8,7 @@ use crate::config::{
     KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
+use crate::task::current_user_token;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -63,6 +64,101 @@ impl MemorySet {
             None,
         );
     }
+
+    /// Drop the frame area
+    pub fn drop_frame_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        for area in self.areas.iter_mut() {
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                area.unmap(&mut self.page_table);
+                return;
+            }
+        }
+    }
+
+    /// mmap syscall
+    pub fn mmap(&mut self, start: usize, len: usize, port: usize) -> isize {
+        // 检查 start 是否按页对齐
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        // 检查 len 是否为零
+        if len == 0 {
+            return -1;
+        }
+        // 检查 port 的有效性
+        if port & !0x7 != 0 || port & 0x7 == 0 {
+            return -1;
+        }
+        // 检查 start + len 是否溢出
+        if start.checked_add(len).is_none() {
+            return -1;
+        }
+        // 计算需要映射的页数
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
+        // 检查区间内是否存在已经被映射的页
+        for vpn in vpn_range {
+            if let Some(pte) = self.page_table.find_pte(vpn) {
+                if pte.is_valid() {
+                    return -1;
+                }
+            }
+        }
+        // 设置内存页属性
+        let mut map_permission = MapPermission::U;
+        if port & 1 != 0 {
+            map_permission |= MapPermission::R;
+        }
+        if port & 2 != 0 {
+            map_permission |= MapPermission::W;
+        }
+        if port & 4 != 0 {
+            map_permission |= MapPermission::X;
+        }
+        // 创建 MapArea 并映射
+        self.insert_framed_area(start_va, end_va, map_permission);
+        0
+    }
+
+    /// munmap syscall
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        // 检查 start 是否按页对齐
+        if start % PAGE_SIZE != 0 {
+            return -1;
+        }
+        // 检查 len 是否为零
+        if len == 0 {
+            return -1;
+        }
+        // 检查 start + len 是否溢出
+        if start.checked_add(len).is_none() {
+            return -1;
+        }
+        // 计算需要解除映射的页数
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let vpn_range = VPNRange::new(start_va.floor(), end_va.ceil());
+        // 获取当前用户进程的页表
+        let page_table = PageTable::from_token(current_user_token());
+        // 检查区间内是否存在未映射的页
+        for vpn in vpn_range {
+            match page_table.translate(vpn) {
+                Some(pte) => {
+                    if !pte.is_valid() {
+                        return -1;
+                    }
+                }
+                None => return -1,
+            }
+        }
+        // 解除映射
+        self.drop_frame_area(start_va, end_va);
+        0
+    }
+
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {

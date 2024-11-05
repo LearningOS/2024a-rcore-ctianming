@@ -1,27 +1,45 @@
 //! Process management syscalls
 use crate::{
     config::MAX_SYSCALL_NUM,
+    mm::translate_va_to_pa,
     task::{
-        change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus,
+        change_program_brk, current_user_token, exit_current_and_run_next, fetch_task_info,
+        suspend_current_and_run_next, TaskStatus, TASK_MANAGER,
     },
+    timer::get_time_us,
 };
 
+/// TimeVal
 #[repr(C)]
 #[derive(Debug)]
 pub struct TimeVal {
+    /// second
     pub sec: usize,
+    /// microsecond
     pub usec: usize,
 }
 
 /// Task information
 #[allow(dead_code)]
+#[derive(Copy, Clone, Debug)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
-    status: TaskStatus,
+    pub status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
-    time: usize,
+    pub time: usize,
+}
+
+impl TaskInfo {
+    /// Initialize a TaskInfo. Status is UnInit by default.
+    pub fn new() -> Self {
+        Self {
+            status: TaskStatus::UnInit,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            time: 0,
+        }
+    }
 }
 
 /// task exits and submit an exit code
@@ -43,7 +61,15 @@ pub fn sys_yield() -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
-    -1
+    let us = get_time_us();
+    let ts = translate_va_to_pa(current_user_token(), _ts as usize) as *mut TimeVal;
+    unsafe {
+        *ts = TimeVal {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        };
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -51,19 +77,33 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info NOT IMPLEMENTED YET!");
-    -1
+    let ti = translate_va_to_pa(current_user_token(), _ti as usize) as *mut TaskInfo;
+    unsafe {
+        *ti = fetch_task_info();
+    }
+    0
 }
 
+/// syscall memory map
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+    let task = TASK_MANAGER.current_task_mut();
+    let memory_set = &mut task.memory_set;
+    memory_set.mmap(_start, _len, _port)
+    // page_table_mmap(current_user_token(), _start, _len, _port);
+    // 0
 }
 
+/// syscall memory unmap
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+    let task = TASK_MANAGER.current_task_mut();
+    let memory_set = &mut task.memory_set;
+    memory_set.munmap(_start, _len)
+    // page_table_munmap(current_user_token(), _start, _len);
+    // 0
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
